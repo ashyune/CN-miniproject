@@ -3,58 +3,96 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
-#include <sys/socket.h>
 #include <sys/time.h>
 
+#define PORT 12345
 #define BUFFER_SIZE 1024
 
-double drift = 0.5;   // simulated clock drift (seconds)
+double drift = 0.5;   // initial artificial drift
 
 double get_real_time()
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return tv.tv_sec + tv.tv_usec / 1000000.0;
+struct timeval tv;
+gettimeofday(&tv, NULL);
+return tv.tv_sec + tv.tv_usec / 1000000.0;
 }
 
 double get_local_time()
 {
-    return get_real_time() + drift;
+return get_real_time() + drift;
 }
 
 int main()
 {
-    char buffer[BUFFER_SIZE];
+int sockfd;
+struct sockaddr_in server_addr;
+char buffer[BUFFER_SIZE];
 
-    for(int i = 1; i <= 5; i++)
-    {
-        // Time when request is sent
-        double T1 = get_local_time();
+sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 
-        // networking send/receive here 
+if (sockfd < 0)
+{
+    perror("Socket creation failed");
+    exit(1);
+}
 
-        // Time when response is received
-        double T4 = get_local_time();
+server_addr.sin_family = AF_INET;
+server_addr.sin_port = htons(PORT);
+inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
 
-        // These will be filled from received data
-        double T1_recv, T2, T3;
+printf("Initial Drift: %.6f sec\n", drift);
 
-        // buffer parsing happens here
+int i = 1;
 
-        // Core synchronization calculations
-        double delay = (T4 - T1_recv) - (T3 - T2);
-        double offset = ((T2 - T1_recv) + (T3 - T4)) / 2;
+while (1)
+{
+    double T1, T2, T3, T4;
+    double delay, offset;
 
-        // Drift correction
-        drift += offset;
+    // T1 (client send time)
+    T1 = get_local_time();
 
-        // Accuracy evaluation
-        double server_time = T3;
-        double client_time = get_local_time();
+    // Send T1 to server
+    sprintf(buffer, "%lf", T1);
+    sendto(sockfd, buffer, strlen(buffer), 0,
+           (struct sockaddr *)&server_addr, sizeof(server_addr));
 
-        double error = client_time - server_time;
+    // Receive T1, T2, T3 from server
+    ssize_t n = recvfrom(sockfd, buffer, BUFFER_SIZE - 1, 0, NULL, NULL);
+    if (n < 0)
+        continue;
 
-        // printing happens here
-        // sleep / loop control handled here
-    }
+    buffer[n] = '\0';
+
+    // T4 (client receive time)
+    T4 = get_local_time();
+
+    double T1_recv;
+    sscanf(buffer, "%lf %lf %lf", &T1_recv, &T2, &T3);
+
+    // NTP calculations
+    delay = (T4 - T1_recv) - (T3 - T2);
+    offset = ((T2 - T1_recv) + (T3 - T4)) / 2;
+
+    // Smooth drift correction
+    drift += offset * 0.5;
+
+    // Accuracy evaluation
+    double server_time = T3;
+    double client_time = get_local_time();
+    double error = client_time - server_time;
+
+    printf("\n--- Iteration %d ---\n", i++);
+    printf("Delay          : %.6f sec\n", delay);
+    printf("Offset         : %.6f sec\n", offset);
+    printf("Updated Drift  : %.6f sec\n", drift);
+    printf("Server Time    : %.6f\n", server_time);
+    printf("Client Time    : %.6f\n", client_time);
+    printf("Sync Error     : %.6f sec\n", error);
+
+    sleep(2);
+}
+
+close(sockfd);
+return 0;
 }
